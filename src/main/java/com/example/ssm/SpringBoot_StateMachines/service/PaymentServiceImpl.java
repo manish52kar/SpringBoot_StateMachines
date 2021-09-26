@@ -5,16 +5,23 @@ import com.example.ssm.SpringBoot_StateMachines.domain.PaymentEvent;
 import com.example.ssm.SpringBoot_StateMachines.domain.PaymentState;
 import com.example.ssm.SpringBoot_StateMachines.repository.PaymentRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.statemachine.StateMachine;
 import org.springframework.statemachine.config.StateMachineFactory;
 import org.springframework.statemachine.support.DefaultStateMachineContext;
 import org.springframework.stereotype.Service;
 
+import javax.transaction.Transactional;
+
 @RequiredArgsConstructor
 @Service
 public class PaymentServiceImpl implements PaymentService {
+    public static final String PAYMENT_ID_HEADER = "payment_id";
     private final PaymentRepository paymentRepository;
     private final StateMachineFactory<PaymentState, PaymentEvent> stateMachineFactory;
+    private final PaymentStateChangeInterceptor paymentStateChangeInterceptor;
 
     @Override
     public Payment newPayment(Payment payment) {
@@ -22,21 +29,47 @@ public class PaymentServiceImpl implements PaymentService {
         return paymentRepository.save(payment);
     }
 
+    @Transactional
     @Override
     public StateMachine<PaymentState, PaymentEvent> preAuth(Long paymentId) {
-        return null;
+
+        StateMachine<PaymentState, PaymentEvent> sm = build(paymentId);
+
+        sendEvent(paymentId,sm,PaymentEvent.PRE_AUTHORIZE);
+
+        return sm;
     }
 
+    @Transactional
     @Override
     public StateMachine<PaymentState, PaymentEvent> authorizePayment(Long paymentId) {
-        return null;
+
+        StateMachine<PaymentState, PaymentEvent> sm = build(paymentId);
+
+        sendEvent(paymentId,sm,PaymentEvent.AUTHORIZE);
+
+        return sm;
     }
 
+    @Transactional
     @Override
     public StateMachine<PaymentState, PaymentEvent> declineAuth(Long paymentId) {
-        return null;
+
+        StateMachine<PaymentState, PaymentEvent> sm = build(paymentId);
+
+        sendEvent(paymentId,sm,PaymentEvent.AUTH_DECLINED);
+
+        return sm;
     }
 
+    //send msg to event
+    private void sendEvent(Long paymentId, StateMachine<PaymentState,PaymentEvent> sm, PaymentEvent event){
+        Message msg = MessageBuilder.withPayload(event)
+                .setHeader(PAYMENT_ID_HEADER,paymentId)
+                .build();
+        sm.sendEvent(msg);
+
+    }
     //Rehydrate data from database
     private StateMachine<PaymentState, PaymentEvent> build(Long paymentId){
         Payment payment = paymentRepository.getById(paymentId);
@@ -45,6 +78,7 @@ public class PaymentServiceImpl implements PaymentService {
         sm.stop();
         sm.getStateMachineAccessor()
                 .doWithAllRegions(sma -> {
+                    sma.addStateMachineInterceptor(paymentStateChangeInterceptor);
                     sma.resetStateMachine(new DefaultStateMachineContext<>(payment.getState(),null,null,null));
                 });
         sm.start();
